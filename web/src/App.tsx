@@ -1,12 +1,43 @@
 import { useEffect, useState } from "react";
-import { api, type AppState } from "./api";
+import { api, ApiError, type AppState } from "./api";
+
+type Action = "load" | "increment" | "decrement" | "reset" | "refresh";
 
 // Seam for Pendo. Novus installs the Pendo agent, which provides window.pendo
 // at runtime; this fires a Track Event for each action. No-op when the agent
 // isn't present (local dev), so the app and Playwright mocks both stay simple.
-function trackEvent(name: string) {
+// Emits demo-<action> on success and demo-action-failed when an action's API
+// call fails. Pendo matches these names exactly, so don't rename them.
+function trackEvent(name: Action | "action-failed", props: Record<string, unknown>) {
   if (typeof window !== "undefined") {
-    window.pendo?.track?.(`demo-${name}`);
+    try {
+      window.pendo?.track?.(`demo-${name}`, props);
+    } catch {
+      // Tracking must never break the app or be reported as a failed action.
+    }
+  }
+}
+
+// Properties for each demo-<action> success event. `prev` is the state that was
+// on screen when the action started and `next` is what the server returned. The
+// server counter is shared by all clients, so `prev` may be stale.
+function successProps(action: Action, prev: AppState, next: AppState): Record<string, unknown> {
+  switch (action) {
+    case "load":
+      return { counter: next.counter, lastAction: next.lastAction };
+    case "increment":
+    case "decrement":
+      return { counter: next.counter, previousCounter: prev.counter };
+    case "reset":
+      // The new counter is always 0, so only the discarded value is useful.
+      return { previousCounter: prev.counter };
+    case "refresh":
+      return {
+        counter: next.counter,
+        previousCounter: prev.counter,
+        counterChanged: next.counter !== prev.counter,
+        lastAction: next.lastAction,
+      };
   }
 }
 
@@ -14,16 +45,29 @@ export default function App() {
   const [state, setState] = useState<AppState>({ counter: 0, lastAction: "none" });
   const [error, setError] = useState<string | null>(null);
 
-  const run = async (name: string, fn: () => Promise<AppState>) => {
+  // `state` is this render's snapshot: what was on screen when the action started.
+  const run = async (name: Action, fn: () => Promise<AppState>) => {
     try {
       setError(null);
-      setState(await fn());
-      trackEvent(name);
+      const next = await fn();
+      setState(next);
+      trackEvent(name, successProps(name, state, next));
     } catch (e) {
-      setError((e as Error).message);
+      const message = e instanceof Error ? e.message : String(e);
+      setError(message);
+      trackEvent("action-failed", {
+        action: name,
+        // Truncated to keep the payload under Pendo's 512-byte property limit.
+        errorMessage: message.slice(0, 100),
+        // Only non-2xx responses carry a status; network errors leave it undefined.
+        httpStatus: e instanceof ApiError ? e.status : undefined,
+        counter: state.counter,
+      });
     }
   };
 
+  // React StrictMode runs this effect twice in development, so demo-load fires
+  // twice there; production builds fire it once.
   useEffect(() => {
     run("load", api.getState);
     // eslint-disable-next-line react-hooks/exhaustive-deps

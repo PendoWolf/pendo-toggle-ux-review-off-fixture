@@ -7,9 +7,21 @@ export interface AppState {
   lastAction: string;
 }
 
+// Thrown for non-2xx responses so callers can report the HTTP status (e.g. the
+// demo-action-failed Track Event). Network errors reject from fetch itself and
+// carry no status.
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function call(path: string, method: "GET" | "POST"): Promise<AppState> {
   const res = await fetch(`${BASE}${path}`, { method });
-  if (!res.ok) throw new Error(`${method} ${path} failed: ${res.status}`);
+  if (!res.ok) throw new ApiError(`${method} ${path} failed: ${res.status}`, res.status);
   return res.json() as Promise<AppState>;
 }
 
