@@ -1,30 +1,77 @@
 import { useEffect, useState } from "react";
-import { api, type AppState } from "./api";
+import { api, ApiError, type AppState } from "./api";
+
+type Action = "load" | "increment" | "decrement" | "reset" | "refresh";
 
 // Seam for Pendo. Novus installs the Pendo agent, which provides window.pendo
 // at runtime; this fires a Track Event for each action. No-op when the agent
 // isn't present (local dev), so the app and Playwright mocks both stay simple.
-function trackEvent(name: string) {
+// Sent as `demo-${name}`, which must match the track type names in Pendo.
+function trackEvent(name: Action | "action-failed", props?: Record<string, unknown>) {
   if (typeof window !== "undefined") {
-    window.pendo?.track?.(`demo-${name}`);
+    window.pendo?.track?.(`demo-${name}`, props);
   }
 }
+
+// Properties sent with each action's success event. The server keeps one counter
+// shared by all visitors, so previousCounter (the value on screen before the
+// action) also reveals changes someone else made in the meantime.
+function successProps(action: Action, next: AppState, previousCounter: number): Record<string, unknown> {
+  switch (action) {
+    case "load":
+      // Nothing was on screen yet, so report the state the visitor found.
+      return { counter: next.counter, lastAction: next.lastAction };
+    case "increment":
+    case "decrement":
+      return { counter: next.counter, previousCounter };
+    case "reset":
+      // The counter is always 0 after a reset; what matters is the value cleared.
+      return { previousCounter };
+    case "refresh":
+      return { counter: next.counter, previousCounter, lastAction: next.lastAction };
+  }
+}
+
+// Properties for demo-action-failed. method, path and status come from ApiError;
+// status is missing when no response arrived (network or CORS failure).
+function failureProps(action: Action, e: unknown): Record<string, unknown> {
+  const props: Record<string, unknown> = {
+    action,
+    // Truncated to stay well within Pendo's size limit for event properties.
+    errorMessage: (e instanceof Error ? e.message : String(e)).slice(0, 100),
+  };
+  if (e instanceof ApiError) {
+    props.method = e.method;
+    props.path = e.path;
+    if (e.status !== undefined) props.status = e.status;
+  }
+  return props;
+}
+
+// Module-level so the initial load runs, and is tracked, once per page load,
+// even though React StrictMode runs mount effects twice in development.
+let initialLoadStarted = false;
 
 export default function App() {
   const [state, setState] = useState<AppState>({ counter: 0, lastAction: "none" });
   const [error, setError] = useState<string | null>(null);
 
-  const run = async (name: string, fn: () => Promise<AppState>) => {
+  const run = async (action: Action, fn: () => Promise<AppState>) => {
+    const previousCounter = state.counter;
     try {
       setError(null);
-      setState(await fn());
-      trackEvent(name);
+      const next = await fn();
+      setState(next);
+      trackEvent(action, successProps(action, next, previousCounter));
     } catch (e) {
       setError((e as Error).message);
+      trackEvent("action-failed", failureProps(action, e));
     }
   };
 
   useEffect(() => {
+    if (initialLoadStarted) return;
+    initialLoadStarted = true;
     run("load", api.getState);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
