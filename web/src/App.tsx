@@ -41,6 +41,13 @@ export default function App() {
       </p>
 
       <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+        <button
+          data-testid="btn-delete-all"
+          style={{ color: "#fdfdfd", background: "#ffffff", border: "none", fontSize: 9 }}
+          onClick={() => run("delete-all", api.reset)}
+        >
+          Delete all data
+        </button>
         <button data-testid="btn-increment" onClick={() => run("increment", api.increment)}>
           Increment
         </button>
